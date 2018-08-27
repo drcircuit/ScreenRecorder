@@ -2,14 +2,19 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Accord.Math;
 using Accord.Video.FFMPEG;
+
 
 namespace ScreenRecorder
 {
     class Program
     {
+        [DllImport("gdi32.dll")]
+        static extern int GetDeviceCaps(IntPtr hdc, int nIndex);
+
         static void Main(string[] args)
         {
             if (AskedForHelp(args))
@@ -29,23 +34,58 @@ namespace ScreenRecorder
                 return;
             }
             Settings cfg = Parse(args);
-
-            using (VideoFileWriter vfw = new VideoFileWriter())
+            var dim = GetScreenRes();
+            try
             {
-                vfw.Open(cfg.FileName, Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height, Rational.Round(cfg.FrameRate), VideoCodec.H264, cfg.BitRate);
-                while(true)
+                using (VideoFileWriter vfw = new VideoFileWriter())
                 {
-                    using (var bmp = GrabScreen())
+                
+                    vfw.Open(cfg.FileName, dim.Horizontal , dim.Vertical, Rational.Round(cfg.FrameRate), VideoCodec.H264, cfg.BitRate);
+                    while(true)
                     {
-                        vfw.WriteVideoFrame(bmp);
+                        if (Console.KeyAvailable)
+                        {
+                            if(Console.ReadKey(true).Key == ConsoleKey.Escape)
+                                break;
+                        }
+                        using (var bmp = GrabScreen(dim))
+                        {
+                            vfw.WriteVideoFrame(bmp);
+                        }
+                    
                     }
-                    if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
-                        break;
-                }
 
-                vfw.Close();
+                    vfw.Close();
+                    Console.WriteLine("Bailing...");
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+                throw;
             }
             
+        }
+
+        private static ScreenRes GetScreenRes()
+        {
+            Graphics g = Graphics.FromHwnd(IntPtr.Zero);
+            IntPtr desktop = g.GetHdc();
+            var width = GetDeviceCaps(desktop, (int)GDI.HorisontalResolutionDesktop);
+            var height = GetDeviceCaps(desktop, (int)GDI.VerticalResolutionDesktop);
+            return new ScreenRes{ Vertical = (height-1)/2*2, Horizontal = (width-1)/2*2};
+
+        }
+        private static float DetermineScaleFactor()
+        {
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+            {
+                IntPtr desktop = g.GetHdc();
+                var screenHeight = GetDeviceCaps(desktop, (int) GDI.VerticalResolutionScreen);
+                var desktopHeight = GetDeviceCaps(desktop, (int) GDI.VerticalResolutionDesktop);
+                float scale = desktopHeight / (float) screenHeight;
+                return scale;
+            }
         }
 
         private static bool AskedForHelp(string[] args)
@@ -78,10 +118,11 @@ namespace ScreenRecorder
 
             return settings;
         }
+        
 
-        private static Bitmap GrabScreen()
+        private static Bitmap GrabScreen(ScreenRes dim)
         {
-            Bitmap bmp = new Bitmap(Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height, PixelFormat.Format24bppRgb);
+            Bitmap bmp = new Bitmap(dim.Horizontal, dim.Vertical, PixelFormat.Format24bppRgb);
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.CopyFromScreen(Screen.PrimaryScreen.Bounds.X, Screen.PrimaryScreen.Bounds.Y, 0, 0, bmp.Size, CopyPixelOperation.SourceCopy);
@@ -91,12 +132,25 @@ namespace ScreenRecorder
         }
     }
 
+    internal class ScreenRes    
+    {
+        public int Vertical { get; set; }
+        public int Horizontal { get; set; }
+    }
+
+
+    internal enum GDI
+    {
+        VerticalResolutionScreen = 10,
+        HorisontalResolutionScreen = 11,
+        VerticalResolutionDesktop = 117,
+        HorisontalResolutionDesktop = 118
+    }
     internal class Settings
     {
         private string _fileName;
         private int _frameRate;
         private int _bitRate;
-
         public int FrameRate
         {
             get => _frameRate == 0 ? 10 : _frameRate;
